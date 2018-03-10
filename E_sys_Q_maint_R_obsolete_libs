@@ -1,0 +1,151 @@
+#!/usr/bin/perl -w
+#======================================
+=head1 description
+
+=over
+
+=item name
+
+E_sys_Q_maint_R_obsolete_libs 2
+
+=item purpose
+
+narzedzie pomocnicze podczas porzadkowania wersji bibliotek wspoldzielonych zainstalowanych w systemach unix w katalogu F</usr/lib> lub odpowiednim.
+
+=item function
+
+znajduje i wypisuje nazwy plikow: -bibliotek wspoldzielonych nie bedacych najaktualniejsza wersja w systemie, -skrotow, ktore nie podpadaja pod szablon nazwy F<.so.*>, gdzie wersja musi byc uogolnieniem (pominieciem podwersji) najaktualniejszej biblioteki.
+
+=item command parameters
+
+[directory instead of F</usr/lib>]
+
+=item working standard
+
+correct sym-links:
+
+F<lib.so.*> -> regular file F<lib.so.*>, where "*" means that string versions match from left one shorter to right one full version.
+
+F<lib.so.*> -> symbolic link F<lib.so.*.*>, etc (#,#+1), where "*" means number element of version string.
+
+=back
+
+=head1 caution
+
+to narzedzie sprawdza I<unikalnosc bibliotek dynamicznych> oraz I<poprawnosc skrotow> majacych ten sam rdzen nazwy.  jakkolwiek systemy rodziny unix zwykle nie sa zgodne z uniwersalnym standardem nazw wersji w nazwach plikow bibliotek dynamicznych (F<.so.*>).  wiec to narzedzie sprawdza poprawnosc, ktora w zalozeniach autorow poszczegolnych systemow unix nie jest utrzymywana.
+
+unikalnosc bibliotek dynamicznych przewaznie jest istotna ze wzgledu na niezawodnosc systemu (wykonywanie najnowszej wersji poszczegolnych bibliotek dynamicznych) oraz oszczednosc wykorzystania pamieci (wykonywanie jednej wersji poszczegolnych bibliotek dynamicznych).  to narzedzie nie rozpozna jako te same bibliotek, ktore maja nazwy zmienione albo w systemie uzytkownika, albo z decyzji producenta.  ponadto niekiedy w systemie wymagana jest obecnosc konkretnych wersji glownych biblioteki dynamicznej, poniewaz nastapila drastyczna zmiana funkcji nowej wersji.
+
+poprawnosc skrotow nie jest mozliwa do naprawienia przez administratora, jesli programy instalacyjne systemu intencjonalnie tworza takie skroty do nowych wersji bibliotek, ale mozna wyszukac i usunac skroty bedace pozostalosciami po bledach poprzednich instalacji oraz nieoczekiwane w projekcie danego systemu unix zapomniane korekty administratora.
+
+dlatego lista wynikowa wymaga interpretacji czlowieka majacego doswiadczenie administracji uszkodzonych systemow rodziny unix, a to narzedzie pozwala polautomatycznie sprawdzic poprawnosc czynnosci administratora podczas powazniejszego sprzatania systemu nieobjetego podrecznikami producentow systemow typu unix, ktorzy zalecaja reinstalacje systemu.
+
+=head1 author
+
+=over
+
+=item copyright
+
+(c)overcq.
+
+=back
+=cut
+#======================================
+use strict;
+use warnings;
+#======================================
+@ARGV <= 1 or die;
+my $dir = '/usr/lib';
+$dir = $ARGV[0] if @ARGV == 1;
+chdir( $dir ) or die;
+#======================================
+sub Q_filename_R_version
+{   my $name = shift;
+    $name =~ /\.so(?:\.(\d+(?:\.\d+)*))?$/;
+    if( defined $1 )
+    {   return split /\./, $1;
+    }else
+    {   return ();
+    }
+}
+#======================================
+print "#[0] $0\n";
+my( %files, %links );
+my $d;
+opendir $d, '.';
+while( readdir $d )
+{   my @a = ();
+    /\.so(?:\.(\d+(?:\.\d+)*))?$/ or next;
+    my $name = $`;
+    my $h;
+    if( -l $_ )
+    {   $h = \%links;
+    }elsif( -f $_ )
+    {   $h = \%files;
+    }else
+    {   print "${_}\t#ignored\n";
+    }
+    @a = split /\./, $1 if defined $1;
+    $h->{$name} = [] unless exists $h->{$name};
+    push @{$h->{$name}}, \@a;
+}
+closedir $d;
+print "#[1] last library file\tobsoletes...\n";
+foreach( keys %files )
+{   goto Next unless @{$files{$_}} > 1;
+    @{$files{$_}} =
+      sort
+      {   my $i = 0;
+          while( defined( $a->[$i] ) and defined( $b->[$i] ))
+          {   my $cmp = $a->[$i] <=> $b->[$i];
+              return $cmp if $cmp;
+              $i++;
+          }
+          return 1 if defined $a->[$i];
+          return -1 if defined $b->[$i];
+          return 0;
+      }
+      @{$files{$_}};
+    print $_ .'.so.'. join( '.', @{$files{$_}[ $#{$files{$_}} ]} ) ."\t";
+    for( my $i = 0; $i < $#{$files{$_}}; $i++ )
+    {   print $_ .'.so.'. join( '.', @{$files{$_}->[$i]} ) .' ';
+    }
+    print "\n";
+Next:
+    @{$files{$_}} = @{$files{$_}[ $#{$files{$_}} ]};
+}
+print "#end of [1].\n";
+print "#[2] sym-links that don\'t match template:\n";
+Loop:
+foreach my $name ( keys %links )
+{   my $m = '';
+    unless( exists $files{$name} )
+    {   $m = 'avail libs';
+        print( $name .'.so'. ( @$_ ? '.'. join( '.', @$_ ) : '' ) ."\t#${m}\n" ) foreach @{$links{$name}};
+        next;
+    }
+    my $file = $name .'.so'. ( @{$files{$name}} ? '.'. join( '.', @{$files{$name}} ) : '' );
+    @{$links{$name}} = sort { @$b <=> @$a } @{$links{$name}};
+    foreach my $lv ( @{$links{$name}} )
+    {   next unless defined $lv;
+        $m = 'ver str gt lib', goto Next unless @$lv < @{$files{$name}};
+        my $i;
+        for( $i = 0; $i < @$lv; $i++ )
+        {   $m = 'ver mismatch lib', goto Next if $lv->[$i] != $files{$name}->[$i];
+        }
+        my $dest = readlink $name .'.so'. ( @$lv ? '.'. join( '.', @$lv ) : '' );
+        next if $dest eq $file;
+        foreach( @{$links{$name}} )
+        {   next unless defined $_;
+            last if $_ == $lv;
+            next Loop if @$_ == @$lv + 1
+              and $name .'.so'. ( @$_ ? '.'. join( '.', @$_ ) : '' ) eq $dest; #NDFN common subexpression.
+        }
+        $m = "indirect link node [${dest}]";
+Next:   print $name .'.so'. ( @$lv ? '.'. join( '.', @$lv ) : '' ) ."\t#${m}\n";
+        $lv = undef;
+    }
+}
+print "#end of [2].\n";
+print "#end of [0].\n";
+#======================================
